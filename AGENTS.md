@@ -11,7 +11,7 @@ development workspace. Always inspect both repositories before and after updates
 system-development changes:
 
 - `D:\Hermes\hermes-agent` (this repo) — installed/running Hermes core and primary
-  development checkout. Remotes: `origin=kosazoltan/hermes-agent-1`,
+  development checkout. Remotes: `origin=kosazoltan/hermes-agent-upstream`,
   `upstream=NousResearch/hermes-agent`, `fork=kosazoltan/Hermes-agent`.
 - `D:\Hermes-agent` — companion workspace/config/governance repo
   (`kosazoltan/Hermes-agent`) containing the multi-model pipeline, adapters,
