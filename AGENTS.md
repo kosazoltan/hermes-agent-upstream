@@ -4,6 +4,25 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Machine-local companion repository (required context)
+
+On this Windows machine, this checkout is one half of a two-repository Hermes
+development workspace. Always inspect both repositories before and after updates or
+system-development changes:
+
+- `D:\Hermes\hermes-agent` (this repo) — installed/running Hermes core and primary
+  development checkout. Remotes: `origin=kosazoltan/hermes-agent-1`,
+  `upstream=NousResearch/hermes-agent`, `fork=kosazoltan/Hermes-agent`.
+- `D:\Hermes-agent` — companion workspace/config/governance repo
+  (`kosazoltan/Hermes-agent`) containing the multi-model pipeline, adapters,
+  role-home generation, and versioned user-owned HOME mirror.
+
+The Hermes Desktop project named **Hermes Agent** includes both folders, with
+`D:\Hermes-agent` as primary. Do not copy or merge the repositories implicitly;
+preserve their separate histories and use only explicit, documented sync paths.
+An upstream/core update is incomplete until both repos' status/remotes and the
+multi-folder project relationship have been read back.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a
