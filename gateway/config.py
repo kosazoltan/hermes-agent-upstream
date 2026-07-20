@@ -130,6 +130,49 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     return parsed
 
 
+_SYSTEMD_WATCHDOG_MAX_SECONDS = 2_147_483_647
+
+
+def coerce_systemd_watchdog_seconds(
+    value: Any, key: str = "gateway.systemd_watchdog_seconds"
+) -> int:
+    """Return a bounded positive watchdog interval or zero when disabled.
+
+    Runtime and service generation share this normalization so a value can
+    never enable ``Type=notify`` while disabling application heartbeats.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+        return 0
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw or not raw.isascii() or not raw.isdecimal():
+            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+            return 0
+        try:
+            parsed = int(raw, 10)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+            return 0
+    else:
+        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+        return 0
+    if parsed == 0:
+        return 0
+    if not 0 < parsed <= _SYSTEMD_WATCHDOG_MAX_SECONDS:
+        logger.warning(
+            "Ignoring invalid %s (expected an integer from 1 to %d)",
+            key,
+            _SYSTEMD_WATCHDOG_MAX_SECONDS,
+        )
+        return 0
+    return parsed
+
+
 def _coerce_dict(value: Any) -> Dict[str, Any]:
     """Return *value* when it is a mapping, otherwise an empty dict."""
     return value if isinstance(value, dict) else {}
@@ -530,6 +573,15 @@ class PlatformConfig:
     # gateway/platforms/base.py.
     typing_indicator: bool = True
 
+    # Custom text for the working-state line on platforms whose typing
+    # indicator renders text rather than a native bubble: Slack's
+    # assistant.threads.setStatus line (shown next to the bot name; needs the
+    # assistant:write scope to render) and Google Chat's visible marker
+    # message. None keeps each platform's built-in default ("is thinking..." /
+    # "Hermes is thinking…"). Platforms with textless indicators (Discord,
+    # Telegram, Matrix, …) ignore it.
+    typing_status_text: Optional[str] = None
+
     # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
 
@@ -544,6 +596,8 @@ class PlatformConfig:
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
         }
+        if self.typing_status_text is not None:
+            result["typing_status_text"] = self.typing_status_text
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -579,6 +633,12 @@ class PlatformConfig:
         if _typing is None:
             _typing = extra.get("typing_indicator")
 
+        # typing_status_text takes the same two routes (top-level or bridged
+        # into extra); string passthrough, no coercion.
+        _typing_text = data.get("typing_status_text")
+        if _typing_text is None:
+            _typing_text = extra.get("typing_status_text")
+
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
         if isinstance(raw_overrides, dict):
@@ -594,6 +654,7 @@ class PlatformConfig:
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
+            typing_status_text=_typing_text,
             channel_overrides=channel_overrides,
             extra=extra,
         )
@@ -768,6 +829,10 @@ class GatewayConfig:
     # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
     multiplex_profiles: bool = False
 
+    # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
+    # disables sd_notify at runtime.
+    systemd_watchdog_seconds: int = 0
+
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
@@ -786,15 +851,27 @@ class GatewayConfig:
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
+            self.systemd_watchdog_seconds
+        )
+
     def get_connected_platforms(self) -> List[Platform]:
-        """Return list of platforms that are enabled and configured."""
+        """Return list of platforms that are enabled and configured.
+
+        Sorted by platform value so the rendered "Connected Platforms" list
+        (and the home-channel blocks derived from it) is byte-stable across
+        gateway restarts and mid-process platform registration — dict
+        insertion order is not a stable contract and a reorder busts the
+        prompt cache without any semantic change.
+        """
         connected = []
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
             if self._is_platform_connected(platform, config):
                 connected.append(platform)
-        return connected
+        return sorted(connected, key=lambda p: str(p.value))
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
         """Check whether a single platform is sufficiently configured."""
@@ -889,6 +966,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
+            "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -951,6 +1029,15 @@ class GatewayConfig:
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        if "systemd_watchdog_seconds" in data:
+            systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
+            systemd_watchdog_key = "systemd_watchdog_seconds"
+        else:
+            systemd_watchdog_raw = nested_gateway.get("systemd_watchdog_seconds")
+            systemd_watchdog_key = "gateway.systemd_watchdog_seconds"
+        systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
+            systemd_watchdog_raw, systemd_watchdog_key
+        )
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -1010,6 +1097,7 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
+            systemd_watchdog_seconds=systemd_watchdog_seconds,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -1090,13 +1178,29 @@ def load_gateway_config() -> GatewayConfig:
             from hermes_cli import managed_scope
             yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
 
+            # Shared nested-fallback source: settings meant to be top-level
+            # keys are also accepted when a user nests them under `gateway:`
+            # (e.g. via `hermes config set gateway.<key> ...`, which naturally
+            # produces that shape). Every key below mirrors the precedent
+            # already established for gateway.multiplex_profiles/streaming/
+            # write_sessions_json: top-level wins, nested gateway.* falls back.
+            gateway_section = yaml_cfg.get("gateway")
+
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
+            # Precedence contract: key-presence at the TOP LEVEL wins; the
+            # nested gateway.* form is consulted only when the top-level key
+            # is absent (not merely falsy/mistyped), so a present-but-empty
+            # top-level value is never silently replaced by the nested one.
             sr = yaml_cfg.get("session_reset")
+            if "session_reset" not in yaml_cfg and isinstance(gateway_section, dict):
+                sr = gateway_section.get("session_reset")
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
 
             qc = yaml_cfg.get("quick_commands")
+            if qc is None and isinstance(gateway_section, dict):
+                qc = gateway_section.get("quick_commands")
             if qc is not None:
                 if isinstance(qc, dict):
                     gw_data["quick_commands"] = qc
@@ -1108,18 +1212,26 @@ def load_gateway_config() -> GatewayConfig:
                     )
 
             stt_cfg = yaml_cfg.get("stt")
+            if "stt" not in yaml_cfg and isinstance(gateway_section, dict):
+                stt_cfg = gateway_section.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
             if "stt_echo_transcripts" in yaml_cfg:
                 gw_data["stt_echo_transcripts"] = yaml_cfg["stt_echo_transcripts"]
+            elif isinstance(gateway_section, dict) and "stt_echo_transcripts" in gateway_section:
+                gw_data["stt_echo_transcripts"] = gateway_section["stt_echo_transcripts"]
 
             gateway_cfg = yaml_cfg.get("gateway")
 
             if "group_sessions_per_user" in yaml_cfg:
                 gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
+            elif isinstance(gateway_section, dict) and "group_sessions_per_user" in gateway_section:
+                gw_data["group_sessions_per_user"] = gateway_section["group_sessions_per_user"]
 
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+            elif isinstance(gateway_section, dict) and "thread_sessions_per_user" in gateway_section:
+                gw_data["thread_sessions_per_user"] = gateway_section["thread_sessions_per_user"]
 
             # Multiplexing flag: accept both the top-level key and the nested
             # gateway.multiplex_profiles form (written by
@@ -1131,58 +1243,67 @@ def load_gateway_config() -> GatewayConfig:
             # ``profile_routes`` or the nested ``gateway.profile_routes`` form
             # (matching the multiplex_profiles parity above).
             _pr = yaml_cfg.get("profile_routes")
-            if _pr is None:
-                _gw_section = yaml_cfg.get("gateway")
-                if isinstance(_gw_section, dict):
-                    _pr = _gw_section.get("profile_routes")
+            if _pr is None and isinstance(gateway_section, dict):
+                _pr = gateway_section.get("profile_routes")
             if isinstance(_pr, list):
                 gw_data["profile_routes"] = _pr
 
-            gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict):
                 if "multiplex_profiles" in gateway_section and "multiplex_profiles" not in gw_data:
                     # gateway.multiplex_profiles written by `hermes config set gateway.multiplex_profiles true`
                     gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
                 if "max_concurrent_sessions" in gateway_section:
                     gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+                if "systemd_watchdog_seconds" in gateway_section:
+                    gw_data["systemd_watchdog_seconds"] = gateway_section[
+                        "systemd_watchdog_seconds"
+                    ]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
 
             streaming_cfg = yaml_cfg.get("streaming")
-            if not isinstance(streaming_cfg, dict):
+            if not isinstance(streaming_cfg, dict) and isinstance(gateway_section, dict):
                 # Fall back to nested gateway.streaming written by
                 # ``hermes config set gateway.streaming.*``
-                streaming_cfg = (
-                    gateway_cfg.get("streaming")
-                    if isinstance(gateway_cfg, dict)
-                    else None
-                )
+                streaming_cfg = gateway_section.get("streaming")
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
+            elif isinstance(gateway_section, dict) and "reset_triggers" in gateway_section:
+                gw_data["reset_triggers"] = gateway_section["reset_triggers"]
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+            elif isinstance(gateway_section, dict) and "always_log_local" in gateway_section:
+                gw_data["always_log_local"] = gateway_section["always_log_local"]
 
             # write_sessions_json: top-level wins; nested gateway.* fallback
             # (matches the gateway.streaming precedence pattern).
-            _gw_section = yaml_cfg.get("gateway")
             if "write_sessions_json" in yaml_cfg:
                 gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
-            elif isinstance(_gw_section, dict) and "write_sessions_json" in _gw_section:
-                gw_data["write_sessions_json"] = _gw_section["write_sessions_json"]
+            elif isinstance(gateway_section, dict) and "write_sessions_json" in gateway_section:
+                gw_data["write_sessions_json"] = gateway_section["write_sessions_json"]
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[
+                    "filter_silence_narration"
+                ]
+            elif isinstance(gateway_section, dict) and "filter_silence_narration" in gateway_section:
+                gw_data["filter_silence_narration"] = gateway_section[
                     "filter_silence_narration"
                 ]
 
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                     yaml_cfg.get("unauthorized_dm_behavior"),
+                    "pair",
+                )
+            elif isinstance(gateway_section, dict) and "unauthorized_dm_behavior" in gateway_section:
+                gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
+                    gateway_section.get("unauthorized_dm_behavior"),
                     "pair",
                 )
 
@@ -1325,6 +1446,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
+                if "typing_status_text" in platform_cfg:
+                    bridged["typing_status_text"] = platform_cfg["typing_status_text"]
                 has_channel_overrides = "channel_overrides" in platform_cfg
                 if has_channel_overrides:
                     raw_overrides = platform_cfg.get("channel_overrides")
