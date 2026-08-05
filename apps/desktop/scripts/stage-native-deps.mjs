@@ -64,6 +64,35 @@ function resolveNodePtyRoot() {
   return dirname(pkgJsonPath)
 }
 
+/**
+ * Recursive directory copy that never hands a *directory* to `cpSync`.
+ *
+ * `cpSync(dir, dir, { recursive: true })` fails with `EIO` when any component
+ * of the destination path contains non-ASCII characters (observed on Windows
+ * with a user profile like `C:\Users\Kósa Zoltán\...`): node's `cpSyncCopyDir`
+ * binding stats the destination through the `\\?\` prefixed path and the
+ * accented component is mis-encoded, so the desktop rebuild dies with
+ * `Error: EIO ... prebuilds\win32-x64\conpty` and the whole update fails at
+ * the rebuild stage. Per-*file* `cpSync` on the exact same paths works, so we
+ * walk the tree ourselves and only ever copy files.
+ *
+ * Use this instead of `cpSync(..., { recursive: true })` anywhere in this
+ * script — an accented install path must not be able to break packaging.
+ */
+function copyDirRecursive(srcDir, destDir) {
+  if (!existsSync(srcDir)) return
+  mkdirSync(destDir, { recursive: true })
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const srcPath = join(srcDir, entry.name)
+    const destPath = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      copyDirRecursive(srcPath, destPath)
+      continue
+    }
+    cpSync(srcPath, destPath)
+  }
+}
+
 function copyGlobByExt(srcDir, destDir, extensions) {
   if (!existsSync(srcDir)) return
   mkdirSync(destDir, { recursive: true })
@@ -96,7 +125,7 @@ function copyBuildRelease(srcDir, destDir) {
   mkdirSync(destDir, { recursive: true })
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
+      copyDirRecursive(join(srcDir, entry.name), join(destDir, entry.name))
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
@@ -261,7 +290,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        copyDirRecursive(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'))
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {

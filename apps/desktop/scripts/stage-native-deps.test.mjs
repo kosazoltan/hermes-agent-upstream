@@ -419,6 +419,42 @@ test('win32 staging rejects a binding dir that claims win32 but holds a foreign 
   }
 })
 
+test('stages the conpty subdirectory into a destination path with non-ASCII components', () => {
+  // Regression: `cpSync(dir, dir, { recursive: true })` throws EIO when a
+  // component of the destination path is non-ASCII (Windows user profiles like
+  // `C:\Users\Kósa Zoltán\...`). That killed the `stage-native-deps` step, so
+  // `npm run build` -> `npm run pack` failed and every `hermes update` ended at
+  // the rebuild stage with "Rebuilding the desktop app failed". Staging must
+  // walk directories itself and only ever cpSync individual files.
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'node-pty')
+    // Accented + spaced destination, mirroring the real failing install path.
+    const destRoot = join(tmp, 'Kósa Zoltán', 'dést')
+
+    makeFakeNodePty(srcRoot, { prebuildPlatform: 'win32', prebuildArch: 'x64' })
+    // node-pty ships the ConPTY payload as a SUBDIRECTORY of the prebuild —
+    // this is the exact directory copy that used to fail.
+    const conptyDir = join(srcRoot, 'prebuilds', 'win32-x64', 'conpty')
+    fs.mkdirSync(conptyDir, { recursive: true })
+    fs.writeFileSync(join(conptyDir, 'conpty.dll'), Buffer.from([0x4d, 0x5a, 0x00, 0x00]))
+    fs.writeFileSync(join(conptyDir, 'OpenConsole.exe'), Buffer.from([0x4d, 0x5a, 0x01, 0x02]))
+
+    stageNodePtyInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' })
+
+    const stagedConpty = join(destRoot, 'prebuilds', 'win32-x64', 'conpty')
+    assert.ok(existsSync(join(stagedConpty, 'conpty.dll')), 'conpty.dll must be staged')
+    assert.ok(existsSync(join(stagedConpty, 'OpenConsole.exe')), 'OpenConsole.exe must be staged')
+    // Byte-identical, not just present.
+    assert.deepEqual(
+      fs.readFileSync(join(stagedConpty, 'OpenConsole.exe')),
+      fs.readFileSync(join(conptyDir, 'OpenConsole.exe'))
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('win32-x64 staging fails when only foreign bindings exist', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
