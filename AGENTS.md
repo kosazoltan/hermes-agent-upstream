@@ -1375,6 +1375,16 @@ def profile_env(tmp_path, monkeypatch):
 
 ## Testing
 
+### TDD starts at the design phase
+
+A plan, design, or explanation of intended behavior is INCOMPLETE without its
+actual failing tests. While writing the explanation/plan, write the tests:
+when the plan is saved, the test files exist in this repo and the RED state is
+immediately runnable (`scripts/run_tests.sh <file> -k <test>` → FAIL). The
+plan's prose describes the behavior, the tests pin it, implementation makes
+them green. A plan that defers tests to "later" is not a plan — see the
+`test-driven-development` and `plan` skills for the full rules.
+
 ### Python
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
