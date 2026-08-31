@@ -15,13 +15,13 @@ Execute plans via delegate_task subagents (2-stage review).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/software-development/subagent-driven-development` |
-| Path | `optional-skills/software-development/subagent-driven-development` |
-| Version | `1.1.0` |
+| Path | `optional-skills/software-development\subagent-driven-development` |
+| Version | `1.2.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `delegation`, `subagent`, `implementation`, `workflow`, `parallel` |
-| Related skills | [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan), [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
+| Related skills | [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
 
 ## Reference: full SKILL.md
 
@@ -95,7 +95,7 @@ delegate_task(
     3. Write minimal implementation
     4. Run: pytest tests/models/test_user.py -v (verify PASS)
     5. Run: pytest tests/ -q (verify no regressions)
-    6. Commit: git add -A && git commit -m "feat: add User model with password hashing"
+    Do not commit. Git is Orchestrator-owned.
 
     PROJECT CONTEXT:
     - Python 3.11, Flask app in src/app.py
@@ -192,22 +192,20 @@ delegate_task(
 )
 ```
 
-### 4. Verify and Commit
+### 4. Verify (no Coder commits)
 
 ```bash
 # Run full test suite
 pytest tests/ -q
 
-# Review all changes
+# Review all changes — Orchestrator owns git
 git diff --stat
-
-# Final commit if needed
-git add -A && git commit -m "feat: complete [feature name] implementation"
 ```
 
 ## Task Granularity
 
-**Each task = 2-5 minutes of focused work.**
+**Each task is a reviewable deliverable, not a 2-5 minute keystroke.**
+A one-line toggle is ONE task. Do not invent five TDD micro-steps.
 
 **Too big:**
 - "Implement user authentication system"
@@ -216,8 +214,6 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 - "Create User model with email and password fields"
 - "Add password hashing function"
 - "Create login endpoint"
-- "Add JWT token generation"
-- "Create registration endpoint"
 
 ## Red Flags — Never Do These
 
